@@ -1,0 +1,6 @@
+Juego;fechas;Recomendado/No Recomendado + extra;comentarios adicionales
+Little Kitty, Big City;02/01/25;Recomendado;Gato negro :3
+Milk inside a bag of milk inside a bag of milk;03/01/25;Recomendado;
+Final Fantasy VI;11/01/25;Recomendado;
+The Pedestrian;27/07/25;No Recomendado;Bueno juego de puzzles, no es worth el precio ni de coña
+Viewfinder;31/07/25;No Recomendado;Muy buen juego de puzzles, pero demasiado caro para lo que es

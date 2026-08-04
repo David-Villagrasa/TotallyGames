@@ -6,6 +6,8 @@ from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 from main_window import Ui_MainWindow
 from table import TableWindow
+from login_window import Ui_LoginWindow
+from register_window import Ui_RegisterWindow
 
 CONFIG_FILE = 'config.json'
 
@@ -16,12 +18,15 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.selected_folder = ""  # attribute to store the selected folder path
         self.files = {}  # dictionary to store the mapping of years to files
         self.load_config()  # load configuration from JSON file
+        self.actionLogOut.setVisible(False)  # hide the Logout button initially
 
         self.btnOpenYear.clicked.connect(self.open_dialog)
         self.actionExit.triggered.connect(self.close_application)
         self.actionSet_Folder.triggered.connect(self.set_folder)  # connect the Set Folder action
         self.actionLoad_Files.triggered.connect(self.reload_files)  # connect the Load Files action
         self.actionNew_Year.triggered.connect(self.add_new_year)  # connect the New Year action
+        self.actionLogIn.triggered.connect(self.open_login_window)
+        self.actionSign_It.triggered.connect(self.open_register_window)
 
         self.check_folder_selected()
 
@@ -103,6 +108,29 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 QMessageBox.information(self, "Success", f"File {year}pg.txt created successfully.")
             else:
                 QMessageBox.warning(self, "Error", "The year is invalid or already exists.")
+
+    def open_login_window(self):
+        self.login_window = QtWidgets.QMainWindow()
+        self.ui_login = Ui_LoginWindow()
+        self.ui_login.setupUi(self.login_window)
+        self.ui_login.pushButton_back.clicked.connect(self.show_main_window)
+        self.login_window.show()
+        self.hide()
+
+    def open_register_window(self):
+        self.register_window = QtWidgets.QMainWindow()
+        self.ui_register = Ui_RegisterWindow()
+        self.ui_register.setupUi(self.register_window)
+        self.ui_register.pushButton_back.clicked.connect(self.show_main_window)
+        self.register_window.show()
+        self.hide()
+
+    def show_main_window(self):
+        self.show()
+        if hasattr(self, 'login_window'):
+            self.login_window.close()
+        if hasattr(self, 'register_window'):
+            self.register_window.close()
 
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)

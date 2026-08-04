@@ -1,0 +1,6 @@
+Juego;fechas;nota sobre 10;comentarios adicionales
+Cats Hidden in Paris;25/02/24;8;Gatos :3
+FINAL FANTASY V;26/02/24;8;
+Baldur's Gate 3;14/03/24;10;
+Elden Ring: Shadow of the Erdtree;15/09/24;10;Shameless coop muy bug
+Factorio: Space Age;13/12/24;10;120 horitas de nada

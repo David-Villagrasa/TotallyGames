@@ -163,3 +163,10 @@ cython_debug/
 
 # Config files
 config.json
+
+# Electron / Node build artifacts
+node_modules/
+out/
+dist/
+release/
+*.log

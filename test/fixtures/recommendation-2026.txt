@@ -1,0 +1,6 @@
+Juego;fechas;Recomendado/No Recomendado + extra;comentarios adicionales
+LIVE A LIVE;06/01/26;Muy Recomendado;
+Wall World;10/01/26;Recomendado;
+Love Choice;10/01/26;Muy Recomendado;
+Incredicer;26/07/26;Poco Recomendado;
+Bills Must Be Paid;02/08/26;Recomendado;

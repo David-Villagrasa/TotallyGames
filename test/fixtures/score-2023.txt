@@ -1,0 +1,7 @@
+Juego;fechas;nota sobre 10;comentarios adicionales
+From the darkness;01/01/23;8;-
+Dark Souls:Remastered;05/02/23;10;Vuelto a jugar
+In sound mind;28/06/23;8;-
+We Were Here Together;31/11/23;8;fecha imposible
+In sound mind;28/06/23;8;-
+In sound mind;28/06/23;8;-

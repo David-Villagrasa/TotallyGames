@@ -63,6 +63,13 @@
       </property>
      </widget>
     </item>
+    <item row="0" column="3">
+     <widget class="QLabel" name="lbl_username">
+      <property name="text">
+       <string>Welcome:</string>
+      </property>
+     </widget>
+    </item>
    </layout>
   </widget>
   <widget class="QMenuBar" name="menubar">
@@ -78,9 +85,6 @@
     <property name="title">
      <string>Options</string>
     </property>
-    <addaction name="actionSet_Folder"/>
-    <addaction name="actionLoad_Files"/>
-    <addaction name="separator"/>
     <addaction name="actionNew_Year"/>
     <addaction name="separator"/>
     <addaction name="actionExit"/>
@@ -90,8 +94,8 @@
      <string>Online Db</string>
     </property>
     <addaction name="actionLogIn"/>
-    <addaction name="actionLogOut"/>
     <addaction name="actionSign_It"/>
+    <addaction name="actionLogOut"/>
     <addaction name="separator"/>
     <addaction name="actionSave_to_DB"/>
    </widget>
@@ -118,18 +122,21 @@
    </property>
   </action>
   <action name="actionLogIn">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
    <property name="text">
-    <string>LogIn</string>
+    <string>Login</string>
    </property>
   </action>
   <action name="actionLogOut">
    <property name="text">
-    <string>LogOut</string>
+    <string>Logout</string>
    </property>
   </action>
   <action name="actionSign_It">
    <property name="text">
-    <string>Sign In</string>
+    <string>Sign Up</string>
    </property>
   </action>
   <action name="actionSave_to_DB">

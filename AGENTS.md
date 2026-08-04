@@ -2,9 +2,10 @@
 
 ## Objetivo del proyecto
 
-Dakos Game Tracker es una aplicacion de escritorio para conservar y consultar
+Digital Game Tracker es una aplicacion de escritorio para conservar y consultar
 los videojuegos jugados por el usuario, organizados por anio, con puntuacion y
-notas.
+notas. `Dakos Game Tracker` se conserva como nombre alternativo del easter egg
+activable con `F2`.
 
 La prioridad principal no es cambiar de tecnologia por moda: es proteger los
 datos existentes y conseguir una importacion fiable de los ficheros TXT que ya
@@ -45,6 +46,7 @@ de arquitectura o de persistencia.
 
 ## Informacion pendiente
 
-Todavia faltan ejemplos representativos de cada formato TXT historico. No
-implementes detectores concretos basandote solo en suposiciones: solicita o
-crea primero casos de prueba anonimizados a partir de ficheros reales.
+Los formatos historicos conocidos tienen ejemplos representativos en
+`test/fixtures/`. No implementes detectores nuevos basandote solo en
+suposiciones: solicita o crea primero casos de prueba anonimizados a partir de
+ficheros reales.

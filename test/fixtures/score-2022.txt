@@ -1,0 +1,8 @@
+Juego;fechas;nota sobre 10;comentarios adicionales
+Factorio;08/01/22;8;-
+Foregone;08/01/22;7;-
+The Room Two;08/01/22;7;-
+Foregone;08/01/22;7;duplicado de prueba
+Elden Ring;02/05/22;10;Repiten bosses pero los ultimos bosses son absurdamente explendidos
+Starbound;16/06/22;8;Crasheo y no se guardo
+TOP5;15;26;20;21;11

@@ -1,4 +1,9 @@
-# Documentacion funcional actual
+# Documentacion funcional de la version Python (legacy)
+
+> La aplicacion activa de la rama `migration` esta documentada en
+> `docs/migration-status.md` y se ejecuta con Electron + React + TypeScript.
+> Este documento conserva el comportamiento de `legacy/` para comparar la
+> migracion y no describe el punto de entrada actual.
 
 Este documento describe el comportamiento del codigo presente en el
 repositorio. Distingue las funciones operativas de los controles que solo
