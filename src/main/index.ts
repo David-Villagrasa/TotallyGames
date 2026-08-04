@@ -400,11 +400,15 @@ function registerIpc(): void {
 }
 
 function createWindow(): void {
+  const appIconPath = fileURLToPath(
+    new URL("../../assets/floppy.ico", import.meta.url),
+  );
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1080,
     minHeight: 720,
+    icon: appIconPath,
     show: false,
     backgroundColor: "#10131a",
     autoHideMenuBar: true,

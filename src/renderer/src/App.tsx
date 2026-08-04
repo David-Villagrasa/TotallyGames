@@ -36,6 +36,7 @@ import {
   SUPPORTED_LOCALES,
 } from "./i18n";
 import type { Locale, TranslationKey, Translator } from "./i18n";
+import floppyIconUrl from "../../../assets/disco-flexible.png";
 
 type View = "overview" | "library" | "import";
 type EditorState = { mode: "create" } | { mode: "edit"; game: GameEntry };
@@ -1152,18 +1153,11 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand-lockup">
-        <svg
-          className="brand-glyph floppy-glyph"
-          viewBox="0 0 32 32"
-          role="img"
-          aria-label={t("accessibility.floppyDisk")}
-        >
-          <rect x="3" y="3" width="26" height="26" rx="3" />
-          <path d="M8 5h15v8H8z" />
-          <path d="M11 5v5h9V5" />
-          <circle cx="16" cy="21" r="6" />
-          <circle className="floppy-center" cx="16" cy="21" r="2" />
-        </svg>
+        <img
+          className="brand-glyph floppy-image"
+          src={floppyIconUrl}
+          alt={t("accessibility.floppyDisk")}
+        />
         <div>
           <div className="brand-name">
             {dakosMode ? t("brand.dakos") : t("brand.digital")}

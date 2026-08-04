@@ -161,6 +161,12 @@ button:disabled {
   color: var(--lime);
   transform: rotate(-8deg);
 }
+.floppy-image {
+  border: 0;
+  border-radius: 5px;
+  object-fit: cover;
+  transform: rotate(-8deg);
+}
 .floppy-glyph rect {
   fill: var(--lime);
   stroke: var(--lime);
