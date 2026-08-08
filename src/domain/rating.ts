@@ -54,8 +54,10 @@ export function scoreToRecommendation(
   if (score === null || score === undefined) {
     return DEFAULT_NO_RATING_RECOMMENDATION;
   }
-  if (!Number.isInteger(score) || score < 0 || score > 10) {
-    throw new RangeError("La puntuacion debe ser un entero entre 0 y 10.");
+  if (!isValidScore(score)) {
+    throw new RangeError(
+      "La puntuación debe estar entre 0 y 10 y tener como máximo dos decimales.",
+    );
   }
   if (score <= 2) return "No Recomendado";
   if (score <= 4) return "Poco Recomendado";
@@ -77,8 +79,18 @@ export const scoreFromRecommendation = recommendationToScore;
 export function isValidScore(value: unknown): value is number {
   return (
     typeof value === "number" &&
-    Number.isInteger(value) &&
+    Number.isFinite(value) &&
     value >= 0 &&
-    value <= 10
+    value <= 10 &&
+    Math.abs(value - Math.round(value * 100) / 100) < 1e-9
   );
+}
+
+export function normalizeScore(value: number): number {
+  if (!isValidScore(value)) {
+    throw new RangeError(
+      "La puntuación debe estar entre 0 y 10 y tener como máximo dos decimales.",
+    );
+  }
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }

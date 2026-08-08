@@ -6,6 +6,8 @@ import {
   scoreToRecommendation,
   DEFAULT_NO_RATING_RECOMMENDATION,
   DEFAULT_NO_RATING_SCORE,
+  isValidScore,
+  normalizeScore,
 } from "../src/domain/rating";
 
 test("recognizes canonical recommendation labels case-insensitively", () => {
@@ -34,4 +36,15 @@ test("uses the defined no-rating fallbacks", () => {
   assert.equal(scoreToRecommendation(null), DEFAULT_NO_RATING_RECOMMENDATION);
   assert.equal(recommendationToScore(null), DEFAULT_NO_RATING_SCORE);
   assert.equal(recommendationToScore("unknown"), DEFAULT_NO_RATING_SCORE);
+});
+
+test("accepts and normalizes scores with at most two decimals", () => {
+  assert.equal(isValidScore(9), true);
+  assert.equal(isValidScore(9.2), true);
+  assert.equal(isValidScore(9.24), true);
+  assert.equal(normalizeScore(9.2), 9.2);
+  assert.equal(normalizeScore(9.24), 9.24);
+  assert.equal(isValidScore(9.999), false);
+  assert.equal(isValidScore(-0.01), false);
+  assert.equal(isValidScore(10.01), false);
 });

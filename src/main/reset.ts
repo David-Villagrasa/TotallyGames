@@ -26,7 +26,7 @@ export function getRepositoryReset(
   const candidate = repository as Partial<RepositoryResetPort>;
   if (typeof candidate.reset !== "function") {
     throw new Error(
-      "El repositorio no ofrece la operacion tipada de reinicio interno.",
+      "El repositorio no ofrece la operación tipada de reinicio interno.",
     );
   }
   const reset = candidate.reset;

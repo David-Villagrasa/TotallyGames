@@ -12,14 +12,17 @@ import { dirname } from "node:path";
 import type {
   CanonicalRatingMode,
   CommitResult,
+  CoverImportSummary,
   DuplicateInfo,
   GameDraft,
   GameEntry,
+  GameStatusKey,
   ImportAudit,
   ImportBatch,
   LibraryState,
   RatingConflict,
   SourceRef,
+  ImportCoverResolver,
 } from "./types";
 import {
   canonicalizeRecommendation,
@@ -27,11 +30,25 @@ import {
   RAW_SCORE_EXTRA_KEY,
   RATING_CONFLICT_EXTRA_KEY,
   isValidScore,
+  normalizeScore,
 } from "./rating";
+import {
+  canonicalizePlatform,
+  isPlatform,
+  RAW_PLATFORM_EXTRA_KEY,
+} from "./platform";
+import { isGameCover } from "./cover";
 import { createFingerprint } from "./text";
-import { validateGameDraft } from "./validation";
+import { isValidDate, validateGameDraft } from "./validation";
+import {
+  addReviewReason,
+  isReviewReason,
+  normalizeReviewReasons,
+  RAW_DATE_EXTRA_KEY,
+  createImportRowKey,
+} from "./review";
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 5 as const;
 
 const EMPTY_STATE: LibraryState = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -94,12 +111,19 @@ function isGameEntry(value: unknown): value is GameEntry {
     typeof value.date === "string" &&
     (value.score === null || isValidScore(value.score)) &&
     (value.recommendation === null || typeof value.recommendation === "string") &&
+    (value.platform === null || isPlatform(value.platform)) &&
+    (value.cover === null || isGameCover(value.cover)) &&
     typeof value.notes === "string" &&
     isRecord(extra) &&
     Object.values(extra).every((entry) => typeof entry === "string") &&
     isSourceRef(value.source) &&
     isRatingMode(value.ratingMode) &&
+    typeof value.completed === "boolean" &&
+    typeof value.platinum === "boolean" &&
+    typeof value.favorite === "boolean" &&
     typeof value.needsReview === "boolean" &&
+    (value.reviewReasons === undefined ||
+      (Array.isArray(value.reviewReasons) && value.reviewReasons.every(isReviewReason))) &&
     (value.ratingConflict === undefined || isRatingConflict(value.ratingConflict)) &&
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string"
@@ -186,7 +210,7 @@ function readLegacySource(
   context: string,
 ): SourceRef {
   if (!isSourceRef(record.source)) {
-    throw new Error(`La fuente de ${context} no es valida.`);
+    throw new Error(`La fuente de ${context} no es válida.`);
   }
   return record.source;
 }
@@ -211,6 +235,10 @@ function inferLegacyRatingMode(
     return "mixed";
   }
 
+  if (sourceFormat === "semicolon-recommendation-platform" && !hasScore) {
+    return "semicolon-recommendation";
+  }
+
   if (hasScore) return "semicolon-score";
   if (hasRecommendation) return "semicolon-recommendation";
   return sourceFormat === "semicolon-mixed" ? "mixed" : "legacy-2021";
@@ -223,16 +251,25 @@ function migrateGame(value: unknown, index: number): GameEntry {
   const context = `el juego ${index + 1}`;
   const extra = cloneLegacyExtra(value.extra);
   const source = readLegacySource(value, context);
+  const statusValue = (field: GameStatusKey): boolean => {
+    const rawStatus = value[field];
+    if (rawStatus === undefined) return false;
+    if (typeof rawStatus === "boolean") return rawStatus;
+    preserveExtra(extra, `raw-${field}`, rawStatus);
+    return false;
+  };
 
   const rawScore = value.score;
   const hasRawScore =
     rawScore !== null && rawScore !== undefined && rawScore !== "";
   let score: number | null = null;
   let needsReview = value.needsReview === true;
+  const reviewReasons = normalizeReviewReasons(value.reviewReasons);
   if (hasRawScore && isValidScore(rawScore)) {
-    score = rawScore;
+    score = normalizeScore(rawScore);
   } else if (hasRawScore) {
     needsReview = true;
+    addReviewReason(reviewReasons, "invalid-score");
     preserveExtra(extra, RAW_SCORE_EXTRA_KEY, rawScore);
   }
 
@@ -251,6 +288,7 @@ function migrateGame(value: unknown, index: number): GameEntry {
       }
     } else {
       needsReview = true;
+      addReviewReason(reviewReasons, "unknown-recommendation");
       recommendation =
         typeof rawRecommendation === "string" ? rawRecommendation : null;
       preserveExtra(extra, RAW_RECOMMENDATION_EXTRA_KEY, rawRecommendation);
@@ -264,7 +302,10 @@ function migrateGame(value: unknown, index: number): GameEntry {
     hasScore,
     hasRecommendation,
   );
-  if (ratingMode === "mixed") needsReview = true;
+  if (ratingMode === "mixed") {
+    needsReview = true;
+    addReviewReason(reviewReasons, "mixed-rating-fields");
+  }
   const rawScoreText = hasRawScore ? serializedValue(rawScore) : undefined;
   const rawRecommendationText = hasRawRecommendation
     ? serializedValue(rawRecommendation)
@@ -280,6 +321,7 @@ function migrateGame(value: unknown, index: number): GameEntry {
       : undefined;
   if (ratingConflict) {
     needsReview = true;
+    addReviewReason(reviewReasons, "mixed-rating-fields");
     preserveExtra(extra, RATING_CONFLICT_EXTRA_KEY, "score-and-recommendation");
     if (rawScoreText) preserveExtra(extra, RAW_SCORE_EXTRA_KEY, rawScoreText);
     if (rawRecommendationText) {
@@ -290,6 +332,49 @@ function migrateGame(value: unknown, index: number): GameEntry {
       );
     }
   }
+
+  const rawPlatform = value.platform;
+  const hasRawPlatform =
+    rawPlatform !== null && rawPlatform !== undefined && rawPlatform !== "";
+  let platform: ReturnType<typeof canonicalizePlatform> = null;
+  if (hasRawPlatform) {
+    if (typeof rawPlatform === "string") {
+      const trimmedPlatform = rawPlatform.trim();
+      if (trimmedPlatform) {
+        const canonical = canonicalizePlatform(trimmedPlatform);
+        if (canonical) {
+          platform = canonical;
+          if (canonical !== trimmedPlatform) {
+            preserveExtra(extra, RAW_PLATFORM_EXTRA_KEY, trimmedPlatform);
+          }
+        } else {
+          needsReview = true;
+          addReviewReason(reviewReasons, "unknown-platform");
+          preserveExtra(extra, RAW_PLATFORM_EXTRA_KEY, trimmedPlatform);
+        }
+      }
+    } else {
+      needsReview = true;
+      addReviewReason(reviewReasons, "unknown-platform");
+      preserveExtra(extra, RAW_PLATFORM_EXTRA_KEY, rawPlatform);
+    }
+  }
+
+  const date = requireString(value, "date", context);
+  if (!isValidDate(date)) {
+    needsReview = true;
+    addReviewReason(reviewReasons, date ? "invalid-date" : "missing-date");
+    if (date) preserveExtra(extra, RAW_DATE_EXTRA_KEY, date);
+  }
+
+  const cover =
+    value.cover === undefined || value.cover === null
+      ? null
+      : isGameCover(value.cover)
+        ? value.cover
+        : (() => {
+            throw new Error(`El campo cover de ${context} no es valido.`);
+          })();
 
   if (value.needsReview !== undefined && typeof value.needsReview !== "boolean") {
     throw new Error(`El campo needsReview de ${context} no es valido.`);
@@ -307,14 +392,20 @@ function migrateGame(value: unknown, index: number): GameEntry {
           : (() => {
               throw new Error(`El campo year de ${context} no es valido.`);
             })(),
-    date: requireString(value, "date", context),
+    date,
     score,
     recommendation,
+    platform,
+    cover,
     notes: requireString(value, "notes", context),
     extra,
     source,
     ratingMode,
+    completed: statusValue("completed"),
+    platinum: statusValue("platinum"),
+    favorite: statusValue("favorite"),
     needsReview,
+    reviewReasons,
     ...(ratingConflict ? { ratingConflict } : {}),
     createdAt: requireString(value, "createdAt", context),
     updatedAt: requireString(value, "updatedAt", context),
@@ -325,7 +416,7 @@ function migrateGame(value: unknown, index: number): GameEntry {
 
 function migrateLibraryState(value: Record<string, unknown>): LibraryState {
   if (!Array.isArray(value.games) || !Array.isArray(value.imports)) {
-    throw new Error("La estructura de la biblioteca no es valida.");
+    throw new Error("La estructura de la biblioteca no es válida.");
   }
   return {
     ...value,
@@ -387,16 +478,21 @@ export class JsonGameRepository {
     if (parsed.schemaVersion === CURRENT_SCHEMA_VERSION) {
       if (!isCurrentLibraryState(parsed)) {
         throw new Error(
-          "La biblioteca no es valida y no se ha sobrescrito.",
+          "La biblioteca no es válida y no se ha sobrescrito.",
         );
       }
       this.state = parsed;
       return this.state;
     }
 
-    if (parsed.schemaVersion !== 1) {
+    if (
+      parsed.schemaVersion !== 1 &&
+      parsed.schemaVersion !== 2 &&
+       parsed.schemaVersion !== 3 &&
+       parsed.schemaVersion !== 4
+    ) {
       throw new Error(
-        `La version ${parsed.schemaVersion} de la biblioteca no es compatible y no se ha sobrescrito.`,
+        `La versión ${parsed.schemaVersion} de la biblioteca no es compatible y no se ha sobrescrito.`,
       );
     }
 
@@ -416,6 +512,8 @@ export class JsonGameRepository {
   async commitImport(
     batch: ImportBatch,
     allowDuplicates: boolean,
+    coverResolver?: ImportCoverResolver,
+    reviewRowKeys: readonly string[] = [],
   ): Promise<CommitResult> {
     const state = await this.load();
     const fingerprints = new Map<string, string>();
@@ -425,12 +523,25 @@ export class JsonGameRepository {
 
     const duplicates: DuplicateInfo[] = [];
     let imported = 0;
+    let importedReview = 0;
     let skippedDuplicates = 0;
+    let skippedReview = 0;
+    const selectedReviewRows = new Set(reviewRowKeys);
 
     for (const file of batch.files) {
       let importedFromFile = 0;
       let skippedFromFile = 0;
+      let skippedReviewFromFile = 0;
+      const reviewRowsFromFile = file.rows.filter((row) => row.needsReview).length;
       for (const parsed of file.rows) {
+        if (
+          parsed.needsReview &&
+          !selectedReviewRows.has(createImportRowKey(parsed.source))
+        ) {
+          skippedReview += 1;
+          skippedReviewFromFile += 1;
+          continue;
+        }
         const fingerprint = createFingerprint(parsed);
         const existingId = fingerprints.get(fingerprint);
         if (existingId && !allowDuplicates) {
@@ -449,8 +560,12 @@ export class JsonGameRepository {
 
         const now = new Date().toISOString();
         const id = randomUUID();
+        const cover = coverResolver
+          ? await coverResolver(parsed)
+          : parsed.cover;
         const game: GameEntry = {
           ...parsed,
+          cover,
           id,
           createdAt: now,
           updatedAt: now,
@@ -459,6 +574,7 @@ export class JsonGameRepository {
         fingerprints.set(fingerprint, id);
         imported += 1;
         importedFromFile += 1;
+        if (parsed.needsReview) importedReview += 1;
       }
 
       const audit: ImportAudit = {
@@ -468,9 +584,12 @@ export class JsonGameRepository {
         fileName: file.fileName,
         format: file.format,
         year: file.year,
+        ...(file.years ? { years: file.years } : {}),
         imported: importedFromFile,
         skippedDuplicates: skippedFromFile,
-        rejected: file.errors.length,
+        reviewRows: reviewRowsFromFile,
+        skippedReview: skippedReviewFromFile,
+        rejected: file.preservedRows.filter((row) => row.kind === "rejected").length,
         warnings: file.warnings.length,
         preservedRows: file.preservedRows,
       };
@@ -478,7 +597,22 @@ export class JsonGameRepository {
     }
 
     await this.save();
-    return { state, imported, skippedDuplicates, duplicates };
+    const coverImport: CoverImportSummary = {
+      enabled: false,
+      searched: 0,
+      assigned: 0,
+      notFound: 0,
+      failed: 0,
+    };
+    return {
+      state,
+      imported,
+      skippedDuplicates,
+      skippedReview,
+      importedReview,
+      duplicates,
+      coverImport,
+    };
   }
 
   async createGame(draft: GameDraft): Promise<LibraryState> {
@@ -492,12 +626,18 @@ export class JsonGameRepository {
       date: validated.date,
       score: validated.score,
       recommendation: validated.recommendation,
-      notes: validated.notes,
-      extra: {},
-      source: { filePath: "manual", line: 0, format: "unknown", raw: "" },
-      ratingMode: validated.ratingMode,
-      needsReview: false,
-      createdAt: now,
+      platform: validated.platform,
+       cover: validated.cover ?? null,
+       notes: validated.notes,
+       extra: validated.extra,
+       completed: validated.completed,
+       platinum: validated.platinum,
+       favorite: validated.favorite,
+        source: { filePath: "manual", line: 0, format: "unknown", raw: "" },
+       ratingMode: validated.ratingMode,
+       needsReview: validated.needsReview,
+       reviewReasons: validated.reviewReasons,
+       createdAt: now,
       updatedAt: now,
     });
     await this.save();
@@ -514,10 +654,53 @@ export class JsonGameRepository {
     game.year = validated.year;
     game.score = validated.score;
     game.recommendation = validated.recommendation;
+    const preservePlatform = draft.platform === undefined;
+    if (!preservePlatform) {
+      game.platform = validated.platform;
+      if (validated.extra[RAW_PLATFORM_EXTRA_KEY] === undefined) {
+        delete game.extra[RAW_PLATFORM_EXTRA_KEY];
+      }
+    }
+    if (draft.cover !== undefined) game.cover = validated.cover ?? null;
     game.notes = validated.notes;
+    if (draft.completed !== undefined) game.completed = validated.completed;
+    if (draft.platinum !== undefined) game.platinum = validated.platinum;
+    if (draft.favorite !== undefined) game.favorite = validated.favorite;
+    Object.assign(game.extra, validated.extra);
+    if (validated.date) delete game.extra[RAW_DATE_EXTRA_KEY];
     game.ratingMode = validated.ratingMode;
-    game.needsReview = false;
+    const reviewReasons = [...validated.reviewReasons];
+    if (
+      preservePlatform &&
+      game.platform === null &&
+      game.extra[RAW_PLATFORM_EXTRA_KEY] !== undefined
+    ) {
+      addReviewReason(reviewReasons, "unknown-platform");
+    }
+    game.reviewReasons = reviewReasons;
+    game.needsReview = reviewReasons.length > 0;
     delete game.ratingConflict;
+    game.updatedAt = new Date().toISOString();
+    await this.save();
+    return state;
+  }
+
+  async updateGameStatus(
+    id: string,
+    status: GameStatusKey,
+    value: boolean,
+  ): Promise<LibraryState> {
+    if (
+      status !== "completed" &&
+      status !== "platinum" &&
+      status !== "favorite"
+    ) {
+      throw new Error("Estado de juego no válido.");
+    }
+    const state = await this.load();
+    const game = state.games.find((candidate) => candidate.id === id);
+    if (!game) throw new Error("Juego no encontrado.");
+    game[status] = value;
     game.updatedAt = new Date().toISOString();
     await this.save();
     return state;

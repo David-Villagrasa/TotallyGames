@@ -21,6 +21,7 @@ function leafPaths(value: object, prefix = ""): string[] {
 
 const importIssueCodes = [
   "invalid-date",
+  "missing-date",
   "missing-year",
   "year-conflict",
   "unparsed-legacy-row",
@@ -72,6 +73,14 @@ test("translates and interpolates names and counts", () => {
     japanese("toasts.importedWithDuplicates", { count: 2, duplicates: 1 }),
     "2件のゲームをインポートしました。1件の重複を省略しました。",
   );
+});
+
+test("keeps Spanish UI accents and the ñ in common labels", () => {
+  const spanishText = JSON.stringify(CATALOG.es);
+  assert.match(spanishText, /año/);
+  assert.match(spanishText, /añadir/i);
+  assert.match(spanishText, /puntuación/);
+  assert.doesNotMatch(spanishText, /\bano\b/);
 });
 
 test("provides localized templates for every import issue code", () => {

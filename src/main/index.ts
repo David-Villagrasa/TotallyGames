@@ -1,26 +1,50 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { JsonGameRepository } from "../domain/storage";
 import { createReadErrorResult, parseTextFile } from "../domain/importer";
 import { createExportResult } from "../domain/exporter";
-import type { Locale, RendererErrorReport } from "../shared/api";
+import { createNeoCsvExportResult, parseNeoCsvFile } from "../domain/neo";
 import type {
-  ExportFormat,
+  ApiExportFormat,
+  CoverSearchResult,
+  Locale,
+  RendererErrorReport,
+} from "../shared/api";
+import type {
+  CoverImportSummary,
+  GameCover,
   GameDraft,
   ImportBatch,
+  ImportCoverResolver,
   ImportResult,
+  ParsedGame,
 } from "../domain/types";
+import { createImportRowKey } from "../domain/review";
 import { FileLogger, fileBasename, type LogEntry, type MainLogger } from "./logger";
-import { isAppSettings, isLocale, SettingsStore } from "./settings";
+import { isAppSettingsInput, isLocale, SettingsStore } from "./settings";
 import { resetApplicationData } from "./reset";
+import { assertExportAllowed, isExportFormat } from "./export-policy";
+import { CoverStore } from "./cover-store";
+import {
+  CoverSearchCache,
+  normalizeCoverSearchQuery,
+  type CoverSearchCacheScope,
+} from "./cover-search-cache";
+import { HltbCoverProvider } from "./hltb-provider";
+import { TheGamesDbProvider } from "./thegamesdb-provider";
+import { parseNeoWorkbookFile, writeNeoWorkbook } from "./neo-excel";
 
 let mainWindow: BrowserWindow | null = null;
 let repository: JsonGameRepository;
 let settingsStore: SettingsStore;
 let logger: MainLogger | null = null;
+let coverStore: CoverStore;
+let coverSearchCache: CoverSearchCache;
+let hltbCoverProvider: HltbCoverProvider;
+let theGamesDbProvider: TheGamesDbProvider;
 const pendingBatches = new Map<string, ImportBatch>();
 const APPLICATION_DIRECTORY = "DakosGameTracker";
 
@@ -31,25 +55,40 @@ function resolveSystemLocale(value: string): "es" | "en" | "ja" {
 
 const dialogText: Record<Locale, Record<string, string>> = {
   es: {
-    importFiles: "Importar historicos TXT",
-    chooseFolder: "Elegir carpeta de historicos",
+    importFiles: "Importar archivos históricos y Neo",
+    chooseFolder: "Elegir carpeta de importación",
+    neoImportFiles: "Importar tabla Neo",
+    neoChooseFolder: "Elegir carpeta de tablas Neo",
     exportLibrary: "Exportar biblioteca",
-    textFiles: "Ficheros de texto",
+    textFiles: "Ficheros compatibles",
     textFile: "Fichero de texto",
+    neoFiles: "Ficheros de tabla Neo",
+    neoFile: "Fichero de tabla Neo",
+    coverFile: "Fichero de imagen",
   },
   en: {
-    importFiles: "Import historical TXT files",
-    chooseFolder: "Choose historical folder",
+    importFiles: "Import historical and Neo files",
+    chooseFolder: "Choose import folder",
+    neoImportFiles: "Import Neo table",
+    neoChooseFolder: "Choose Neo table folder",
     exportLibrary: "Export library",
-    textFiles: "Text files",
+    textFiles: "Compatible files",
     textFile: "Text file",
+    neoFiles: "Neo table files",
+    neoFile: "Neo table file",
+    coverFile: "Image file",
   },
   ja: {
-    importFiles: "履歴TXTをインポート",
-    chooseFolder: "履歴フォルダーを選択",
+    importFiles: "履歴とNeoファイルをインポート",
+    chooseFolder: "インポートフォルダーを選択",
+    neoImportFiles: "Neoテーブルをインポート",
+    neoChooseFolder: "Neoテーブルフォルダーを選択",
     exportLibrary: "ライブラリをエクスポート",
-    textFiles: "テキストファイル",
+    textFiles: "対応ファイル",
     textFile: "テキストファイル",
+    neoFiles: "Neoテーブルファイル",
+    neoFile: "Neoテーブルファイル",
+    coverFile: "画像ファイル",
   },
 };
 
@@ -175,7 +214,10 @@ function registerProcessErrorHandlers(): void {
 
 async function readAndParseFile(filePath: string): Promise<ImportResult> {
   try {
+    const extension = extname(filePath).toLowerCase();
+    if (extension === ".xlsx") return await parseNeoWorkbookFile(filePath);
     const content = await readFile(filePath, "utf8");
+    if (extension === ".csv") return parseNeoCsvFile(filePath, content);
     const result = parseTextFile(filePath, content);
     if (content.includes("\uFFFD")) {
       result.warnings.push({
@@ -216,7 +258,7 @@ async function makeBatch(filePaths: string[]): Promise<ImportBatch> {
       severity: "warning",
       code: "mixed-rating-batch",
       message:
-        "El lote mezcla modelos de valoracion; cada fila conserva el modo de su fichero de origen.",
+        "El lote mezcla modelos de valoración; cada fila conserva el modo de su fichero de origen.",
     });
   }
   const batch: ImportBatch = {
@@ -233,7 +275,12 @@ async function chooseFiles(): Promise<ImportBatch | null> {
   const result = await dialog.showOpenDialog(mainWindow!, {
     title: text.importFiles,
     properties: ["openFile", "multiSelections"],
-    filters: [{ name: text.textFiles, extensions: ["txt"] }],
+    filters: [
+      {
+        name: text.textFiles,
+        extensions: ["txt", "xlsx", "csv"],
+      },
+    ],
   });
   return result.canceled || result.filePaths.length === 0
     ? null
@@ -252,22 +299,240 @@ async function chooseFolder(): Promise<ImportBatch | null> {
   const entries = await readdir(folder, { withFileTypes: true });
   const files = entries
     .filter(
-      (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".txt"),
+      (entry) =>
+        entry.isFile() &&
+        [".txt", ".xlsx", ".csv"].includes(extname(entry.name).toLowerCase()),
     )
     .map((entry) => join(folder, entry.name))
     .sort((left, right) => left.localeCompare(right));
   return files.length === 0 ? makeBatch([]) : makeBatch(files);
 }
 
-function isExportFormat(value: unknown): value is ExportFormat {
+function isCoverSearchResult(value: unknown): value is CoverSearchResult {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CoverSearchResult>;
   return (
-    value === "legacy-2021" ||
-    value === "semicolon-score" ||
-    value === "semicolon-recommendation"
+    (candidate.provider === "howlongtobeat" ||
+      candidate.provider === "thegamesdb") &&
+    typeof candidate.sourceId === "string" &&
+    candidate.sourceId.length <= 100 &&
+    typeof candidate.title === "string" &&
+    candidate.title.length > 0 &&
+    candidate.title.length <= 300 &&
+    typeof candidate.imageUrl === "string" &&
+    typeof candidate.detailUrl === "string"
   );
 }
 
-async function exportLibrary(format: ExportFormat) {
+async function searchCovers(query: string): Promise<CoverSearchResult[]> {
+  if (typeof query !== "string" || query.trim().length < 2 || query.length > 200) {
+    return [];
+  }
+  const settings = await settingsStore.load();
+  const cacheScope: CoverSearchCacheScope = settings.theGamesDbApiKey
+    ? "thegamesdb"
+    : "hltb";
+  try {
+    const cached = await coverSearchCache.get(query, cacheScope);
+    if (cached !== undefined) {
+      await safeLog({
+        level: "info",
+        process: "main",
+        operation: "cover:search:cache-hit",
+        message: `Se reutilizaron ${cached.length} candidatas para "${query.trim()}".`,
+      });
+      return cached;
+    }
+  } catch (error) {
+    const details = describeError(error);
+    await safeLog({
+      level: "warn",
+      process: "main",
+      operation: "cover:search:cache-read",
+      message: details.message,
+      stack: details.stack,
+    });
+  }
+
+  if (settings.theGamesDbApiKey) {
+    try {
+      const results = await theGamesDbProvider.search(
+        query,
+        settings.theGamesDbApiKey,
+      );
+      if (results.length > 0) {
+        await saveCoverSearchCache(query, cacheScope, results);
+        return results;
+      }
+      await safeLog({
+        level: "warn",
+        process: "main",
+        operation: "cover:search:thegamesdb-empty",
+        message: "TheGamesDB no devolvio candidatas; se prueba HLTB.",
+      });
+    } catch (error) {
+      const details = describeError(error);
+      await safeLog({
+        level: "warn",
+        process: "main",
+        operation: "cover:search:thegamesdb",
+        message: details.message,
+        stack: details.stack,
+      });
+    }
+  }
+  const results = await hltbCoverProvider.search(query);
+  await saveCoverSearchCache(query, cacheScope, results);
+  return results;
+}
+
+async function saveCoverSearchCache(
+  query: string,
+  scope: CoverSearchCacheScope,
+  results: CoverSearchResult[],
+): Promise<void> {
+  try {
+    await coverSearchCache.set(query, scope, results);
+  } catch (error) {
+    const details = describeError(error);
+    await safeLog({
+      level: "warn",
+      process: "main",
+      operation: "cover:search:cache-write",
+      message: details.message,
+      stack: details.stack,
+    });
+  }
+}
+
+async function clearCoverSearchCache(): Promise<void> {
+  await coverSearchCache.clear();
+  await safeLog({
+    level: "info",
+    process: "main",
+    operation: "cover:search:cache-clear",
+    message: "Se borró la caché persistente de búsquedas de portadas.",
+  });
+}
+
+function emptyCoverImportSummary(enabled = false): CoverImportSummary {
+  return {
+    enabled,
+    searched: 0,
+    assigned: 0,
+    notFound: 0,
+    failed: 0,
+  };
+}
+
+async function prepareImportCoverResolver(
+  batch: ImportBatch,
+  reviewRowKeys: ReadonlySet<string>,
+): Promise<{
+  resolver: ImportCoverResolver;
+  summary: CoverImportSummary;
+}> {
+  const summary = emptyCoverImportSummary(true);
+  const candidatesByName = new Map<string, CoverSearchResult[]>();
+  const rows = batch.files.flatMap((file) =>
+    file.rows.filter(
+      (row) =>
+        !row.needsReview || reviewRowKeys.has(createImportRowKey(row.source)),
+    ),
+  );
+
+  for (const row of rows) {
+    const key = normalizeCoverSearchQuery(row.name);
+    if (candidatesByName.has(key)) continue;
+    summary.searched += 1;
+    try {
+      candidatesByName.set(key, await searchCovers(row.name));
+    } catch (error) {
+      candidatesByName.set(key, []);
+      summary.failed += 1;
+      const details = describeError(error);
+      await safeLog({
+        level: "warn",
+        process: "main",
+        operation: "cover:import:search",
+        message: `No se pudo buscar una portada para "${row.name}": ${details.message}`,
+        stack: details.stack,
+      });
+    }
+  }
+
+  const savedByName = new Map<string, GameCover | null>();
+  const resolver: ImportCoverResolver = async (parsed: ParsedGame) => {
+    const key = normalizeCoverSearchQuery(parsed.name);
+    if (savedByName.has(key)) {
+      const cachedCover = savedByName.get(key) ?? null;
+      if (cachedCover) summary.assigned += 1;
+      return cachedCover;
+    }
+
+    const candidate = candidatesByName.get(key)?.[0];
+    if (!candidate) {
+      savedByName.set(key, null);
+      summary.notFound += 1;
+      return null;
+    }
+
+    try {
+      const savedCover = await coverStore.saveSearchResult(candidate);
+      savedByName.set(key, savedCover);
+      summary.assigned += 1;
+      return savedCover;
+    } catch (error) {
+      savedByName.set(key, null);
+      summary.failed += 1;
+      const details = describeError(error);
+      await safeLog({
+        level: "warn",
+        process: "main",
+        operation: "cover:import:save",
+        message: `No se pudo guardar la portada de "${parsed.name}": ${details.message}`,
+        stack: details.stack,
+      });
+      return null;
+    }
+  };
+
+  return { resolver, summary };
+}
+
+async function saveCoverFromSearch(
+  result: CoverSearchResult,
+): Promise<GameCover> {
+  if (!isCoverSearchResult(result)) {
+    throw new Error("Resultado de portada no valido.");
+  }
+  return coverStore.saveSearchResult(result);
+}
+
+async function readCoverPreview(result: CoverSearchResult): Promise<string> {
+  if (!isCoverSearchResult(result)) {
+    throw new Error("Resultado de portada no valido.");
+  }
+  return coverStore.readSearchPreview(result);
+}
+
+async function chooseCoverFile(): Promise<GameCover | null> {
+  const text = await getDialogText();
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    title: text.coverFile,
+    properties: ["openFile"],
+    filters: [
+      { name: text.coverFile, extensions: ["jpg", "jpeg", "png", "webp"] },
+    ],
+  });
+  return result.canceled || result.filePaths.length === 0
+    ? null
+    : coverStore.saveLocalFile(result.filePaths[0]);
+}
+
+async function exportLibrary(format: ApiExportFormat) {
+  const settings = await settingsStore.load();
+  assertExportAllowed(format, settings);
   const state = await repository.load();
   const text = await getDialogText();
   const suffix =
@@ -275,18 +540,38 @@ async function exportLibrary(format: ExportFormat) {
       ? "legacy-2021"
       : format === "semicolon-score"
         ? "score"
-        : "recommendation";
+        : format === "semicolon-recommendation"
+        ? "recommendation"
+        : format === "semicolon-recommendation-platform"
+          ? "platform"
+          : format;
+  const neoExport = format === "neo-xlsx" || format === "neo-csv";
+  const extension = neoExport && format === "neo-xlsx" ? "xlsx" : neoExport ? "csv" : "txt";
   const result = await dialog.showSaveDialog(mainWindow!, {
     title: text.exportLibrary,
     defaultPath: join(
       app.getPath("documents"),
-      `digital-game-tracker-${suffix}.txt`,
+      `digital-game-tracker-${suffix}.${extension}`,
     ),
-    filters: [{ name: text.textFile, extensions: ["txt"] }],
+    filters: [
+      {
+        name: neoExport ? text.neoFile : text.textFile,
+        extensions: [extension],
+      },
+    ],
   });
   if (result.canceled || !result.filePath) return null;
 
-  const exportResult = createExportResult(result.filePath, format, state.games);
+  if (format === "neo-xlsx") {
+    await writeNeoWorkbook(result.filePath, state.games);
+    const summary = createNeoCsvExportResult(result.filePath, state.games);
+    const { content: _content, ...withoutContent } = summary;
+    return { ...withoutContent, format };
+  }
+  const exportResult =
+    format === "neo-csv"
+      ? createNeoCsvExportResult(result.filePath, state.games)
+      : createExportResult(result.filePath, format, state.games);
   await writeFile(exportResult.filePath, exportResult.content, "utf8");
   const { content: _content, ...summary } = exportResult;
   return summary;
@@ -310,20 +595,41 @@ function registerIpc(): void {
 
   ipcMain.handle(
     "import:commit",
-    async (event, batchId: string, allowDuplicates: boolean) => {
+    async (
+      event,
+      batchId: string,
+      allowDuplicates: boolean,
+      autoCoverImport: boolean,
+      reviewRowKeys: string[],
+    ) => {
       assertTrustedSender(event);
       return withLoggedFailure("import:commit", async () => {
         const batch = pendingBatches.get(batchId);
         if (!batch)
           throw new Error(
-            "La previsualizacion de importacion ya no esta disponible.",
+            "La previsualización de importación ya no está disponible.",
           );
+        let coverImport = emptyCoverImportSummary(Boolean(autoCoverImport));
+        let coverResolver: ImportCoverResolver | undefined;
+        const selectedReviewRows = new Set(
+          Array.isArray(reviewRowKeys) ? reviewRowKeys : [],
+        );
+        if (Boolean(autoCoverImport)) {
+          const prepared = await prepareImportCoverResolver(
+            batch,
+            selectedReviewRows,
+          );
+          coverImport = prepared.summary;
+          coverResolver = prepared.resolver;
+        }
         const result = await repository.commitImport(
           batch,
           Boolean(allowDuplicates),
+          coverResolver,
+          [...selectedReviewRows],
         );
         pendingBatches.delete(batchId);
-        return result;
+        return { ...result, coverImport };
       });
     },
   );
@@ -340,16 +646,73 @@ function registerIpc(): void {
     );
   });
 
+  ipcMain.handle(
+    "game:update-status",
+    async (event, id: unknown, status: unknown, value: unknown) => {
+      assertTrustedSender(event);
+      return withLoggedFailure("game:update-status", async () => {
+        if (
+          typeof id !== "string" ||
+          (status !== "completed" &&
+            status !== "platinum" &&
+            status !== "favorite") ||
+          typeof value !== "boolean"
+        ) {
+          throw new Error("Estado de juego no válido.");
+        }
+        return repository.updateGameStatus(id, status, value);
+      });
+    },
+  );
+
   ipcMain.handle("game:delete", async (event, ids: string[]) => {
     assertTrustedSender(event);
     return withLoggedFailure("game:delete", () => repository.deleteGames(ids));
+  });
+
+  ipcMain.handle("cover:search", async (event, query: unknown) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:search", () =>
+      searchCovers(typeof query === "string" ? query : ""),
+    );
+  });
+
+  ipcMain.handle("cover:save-search", async (event, result: unknown) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:save-search", () =>
+      saveCoverFromSearch(result as CoverSearchResult),
+    );
+  });
+
+  ipcMain.handle("cover:preview", async (event, result: unknown) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:preview", () =>
+      readCoverPreview(result as CoverSearchResult),
+    );
+  });
+
+  ipcMain.handle("cover:cache:clear", async (event) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:cache:clear", clearCoverSearchCache);
+  });
+
+  ipcMain.handle("cover:select-file", async (event) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:select-file", chooseCoverFile);
+  });
+
+  ipcMain.handle("cover:read", async (event, key: unknown) => {
+    assertTrustedSender(event);
+    return withLoggedFailure("cover:read", () =>
+      coverStore.readDataUrl(typeof key === "string" ? key : ""),
+    );
   });
 
   ipcMain.handle("export:library", async (event, format: unknown) => {
     assertTrustedSender(event);
     return withLoggedFailure("export:library", async () => {
       if (!isExportFormat(format))
-        throw new Error("Formato de exportacion no valido.");
+        throw new Error("Formato de exportación no válido.");
       return exportLibrary(format);
     });
   });
@@ -362,8 +725,8 @@ function registerIpc(): void {
   ipcMain.handle("settings:save", async (event, settings: unknown) => {
     assertTrustedSender(event);
     return withLoggedFailure("settings:save", async () => {
-      if (!isAppSettings(settings))
-        throw new Error("Configuracion no valida.");
+      if (!isAppSettingsInput(settings))
+        throw new Error("Configuración no válida.");
       return settingsStore.save(settings);
     });
   });
@@ -372,6 +735,8 @@ function registerIpc(): void {
     assertTrustedSender(event);
     return withLoggedFailure("app:reset", async () => {
       const result = await resetApplicationData(repository, settingsStore);
+      await coverStore.clear();
+      await coverSearchCache.clear();
       pendingBatches.clear();
       await safeLog({
         level: "info",
@@ -406,8 +771,8 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1080,
-    minHeight: 720,
+     minWidth: 760,
+     minHeight: 620,
     icon: appIconPath,
     show: false,
     backgroundColor: "#10131a",
@@ -432,6 +797,7 @@ function createWindow(): void {
   }
 
   mainWindow.on("closed", () => {
+    hltbCoverProvider?.dispose();
     mainWindow = null;
   });
 }
@@ -453,6 +819,12 @@ if (!gotLock) {
       join(userDataPath, "settings.v1.json"),
       resolveSystemLocale(app.getLocale()),
     );
+    coverStore = new CoverStore(join(userDataPath, "covers"));
+    coverSearchCache = new CoverSearchCache(
+      join(userDataPath, "cover-search-cache.v1.json"),
+    );
+    hltbCoverProvider = new HltbCoverProvider();
+    theGamesDbProvider = new TheGamesDbProvider();
     Menu.setApplicationMenu(null);
     registerIpc();
     createWindow();
@@ -464,5 +836,9 @@ if (!gotLock) {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("before-quit", () => {
+    hltbCoverProvider?.dispose();
   });
 }

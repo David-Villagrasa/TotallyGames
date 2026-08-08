@@ -48,22 +48,23 @@ test("detects score tables and keeps TOP5 summary rows", async () => {
   );
 });
 
-test("rejects invalid dates without losing the raw row", async () => {
+test("keeps invalid dates as reviewable rows without losing the raw row", async () => {
   const result = await parseFixture(
     "score-2023.txt",
     "2023 juegos jugados.txt",
   );
 
-  assert.equal(result.rows.length, 5);
+  assert.equal(result.rows.length, 6);
   assert.equal(
     result.errors.filter((entry) => entry.code === "invalid-date").length,
     1,
   );
-  assert.ok(
-    result.preservedRows.some((row) =>
-      row.raw.includes("We Were Here Together"),
-    ),
+  const reviewRow = result.rows.find((row) =>
+    row.name.includes("We Were Here Together"),
   );
+  assert.equal(reviewRow?.date, "");
+  assert.equal(reviewRow?.needsReview, true);
+  assert.equal(reviewRow?.extra["raw-date"], "31/11/23");
 });
 
 test("detects recommendation tables from 2025 and preserves verdict text", async () => {
@@ -162,13 +163,27 @@ test("parses mixed rating columns without discarding either value", () => {
   assert.equal(result.rows[0].source.raw, "Game;01/01/24;8;rEcOmEnDaDo;both values");
 });
 
-test("rejects invalid scores while preserving the original row", () => {
+test("keeps invalid scores as reviewable rows while preserving the original value", () => {
   const result = parseTextFile(
     "2024 invalid.txt",
     "Juego;fechas;nota sobre 10;comentarios adicionales\nGame;01/01/24;11;source",
   );
 
-  assert.equal(result.rows.length, 0);
+  assert.equal(result.rows.length, 1);
   assert.equal(result.errors[0].code, "invalid-score");
-  assert.equal(result.preservedRows[0].raw, "Game;01/01/24;11;source");
+  assert.equal(result.rows[0].needsReview, true);
+  assert.equal(result.rows[0].score, null);
+  assert.equal(result.rows[0].extra["raw-score"], "11");
+});
+
+test("keeps a game with a missing date visible for an explicit review decision", () => {
+  const result = parseTextFile(
+    "2024 missing-date.txt",
+    "Juego;fechas;nota sobre 10;comentarios adicionales\nGame;;8;source",
+  );
+
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].date, "");
+  assert.equal(result.rows[0].needsReview, true);
+  assert.equal(result.errors[0].code, "missing-date");
 });

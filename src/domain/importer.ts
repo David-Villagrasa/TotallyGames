@@ -3,8 +3,10 @@ import type {
   ImportFormat,
   ImportIssue,
   ImportResult,
+  Platform,
   ParsedGame,
   PreservedRow,
+  ReviewReason,
 } from "./types";
 import {
   extractYearFromFileName,
@@ -17,7 +19,17 @@ import {
   RAW_SCORE_EXTRA_KEY,
   RATING_CONFLICT_EXTRA_KEY,
   isValidScore,
+  normalizeScore,
 } from "./rating";
+import {
+  canonicalizePlatform,
+  RAW_PLATFORM_EXTRA_KEY,
+} from "./platform";
+import {
+  addReviewReason,
+  RAW_DATE_EXTRA_KEY,
+  reviewReasonFromCode,
+} from "./review";
 
 interface ParsedDate {
   value: string | null;
@@ -29,6 +41,7 @@ interface ColumnMap {
   date: number;
   score: number | null;
   recommendation: number | null;
+  platform: number | null;
   notes: number | null;
 }
 
@@ -50,6 +63,18 @@ function parseDate(
   line: number,
   raw: string,
 ): ParsedDate {
+  if (!value.trim()) {
+    return {
+      value: null,
+      issue: issue(
+        line,
+        "error",
+        "missing-date",
+        "Falta la fecha del juego.",
+        raw,
+      ),
+    };
+  }
   const match = value.trim().match(DATE_PATTERN);
   if (!match) {
     return {
@@ -58,7 +83,7 @@ function parseDate(
         line,
         "error",
         "invalid-date",
-        `Fecha no valida: "${value}".`,
+        `Fecha no válida: "${value}".`,
         raw,
       ),
     };
@@ -76,7 +101,7 @@ function parseDate(
         line,
         "error",
         "missing-year",
-        "No se puede interpretar un anio de dos digitos sin anio de fichero.",
+        "No se puede interpretar un año de dos dígitos sin año de fichero.",
         raw,
       ),
     };
@@ -94,7 +119,7 @@ function parseDate(
         line,
         "error",
         "invalid-date",
-        `Fecha no valida: "${value}".`,
+        `Fecha no válida: "${value}".`,
         raw,
       ),
     };
@@ -125,11 +150,28 @@ function addDateIssue(result: ImportResult, parsed: ParsedDate): void {
   }
 }
 
+function addReviewIssue(reasons: ReviewReason[], parsed: ParsedDate): void {
+  const reason = parsed.issue ? reviewReasonFromCode(parsed.issue.code) : null;
+  if (reason) addReviewReason(reasons, reason);
+}
+
 function findColumn(headers: string[], candidates: string[]): number | null {
   const index = headers.findIndex((header) =>
     candidates.some((candidate) => header.includes(candidate)),
   );
   return index === -1 ? null : index;
+}
+
+function preserveRawExtra(
+  extra: Record<string, string>,
+  key: string,
+  value: string,
+): void {
+  if (!(key in extra) || extra[key] === value) {
+    extra[key] = value;
+  } else {
+    extra[`${key}-import`] = value;
+  }
 }
 
 function detectSemicolonFormat(
@@ -154,24 +196,43 @@ function detectSemicolonFormat(
     "adicional",
     "comment",
   ]);
+  const platform = findColumn(normalized, [
+    "plataforma",
+    "platform",
+    "consola",
+    "console",
+  ]);
 
   if (name === null || date === null || notes === null) return null;
   if (score !== null && recommendation !== null) {
     return {
       format: "semicolon-mixed",
-      map: { name, date, score, recommendation, notes },
+      map: { name, date, score, recommendation, platform: null, notes },
+    };
+  }
+  if (recommendation !== null && platform !== null) {
+    return {
+      format: "semicolon-recommendation-platform",
+      map: { name, date, score: null, recommendation, platform, notes },
     };
   }
   if (recommendation !== null) {
     return {
       format: "semicolon-recommendation",
-      map: { name, date, score: null, recommendation, notes },
+      map: {
+        name,
+        date,
+        score: null,
+        recommendation,
+        platform: null,
+        notes,
+      },
     };
   }
   if (score !== null) {
     return {
       format: "semicolon-score",
-      map: { name, date, score, recommendation: null, notes },
+      map: { name, date, score, recommendation: null, platform: null, notes },
     };
   }
   return null;
@@ -204,7 +265,7 @@ function addPreserved(result: ImportResult, preserved: PreservedRow): void {
 
 function parseLegacy(lines: string[], result: ImportResult): void {
   const legacyPattern =
-    /^\s*(.*?)\s*\/\/\/\s*(\d{1,2}\/\d{1,2}\/\d{4})\s*(?:\((.*?)\))?\s*$/;
+    /^\s*(.*?)\s*\/\/\/\s*(.*?)\s*(?:\((.*?)\))?\s*$/;
 
   lines.forEach((raw, index) => {
     const line = index + 1;
@@ -219,8 +280,8 @@ function parseLegacy(lines: string[], result: ImportResult): void {
         kind: looksLikeGame ? "rejected" : "metadata",
         raw,
         reason: looksLikeGame
-          ? "La fila contiene el separador historico, pero no una fecha valida."
-          : "Linea de resumen o metadato conservada sin convertirla en juego.",
+          ? "La fila contiene el separador histórico, pero no una fecha válida."
+          : "Línea de resumen o metadato conservada sin convertirla en juego.",
       });
       if (looksLikeGame) {
         result.errors.push(
@@ -228,23 +289,11 @@ function parseLegacy(lines: string[], result: ImportResult): void {
             line,
             "error",
             "unparsed-legacy-row",
-            "No se pudo interpretar la fila historica.",
+            "No se pudo interpretar la fila histórica.",
             raw,
           ),
         );
       }
-      return;
-    }
-
-    const date = parseDate(match[2], result.year, line, raw);
-    addDateIssue(result, date);
-    if (!date.value) {
-      addPreserved(result, {
-        line,
-        kind: "rejected",
-        raw,
-        reason: "Fecha invalida.",
-      });
       return;
     }
 
@@ -268,17 +317,32 @@ function parseLegacy(lines: string[], result: ImportResult): void {
       return;
     }
 
+    const reviewReasons: ReviewReason[] = [];
+    const date = parseDate(match[2], result.year, line, raw);
+    addDateIssue(result, date);
+    addReviewIssue(reviewReasons, date);
+    const extra: Record<string, string> = {};
+    if (!date.value && match[2].trim()) {
+      extra[RAW_DATE_EXTRA_KEY] = match[2].trim();
+    }
+
     result.rows.push({
       name,
       year: result.year,
-      date: date.value,
+      date: date.value ?? "",
       score: null,
       recommendation: null,
+      platform: null,
+      cover: null,
       notes: match[3]?.trim() ?? "",
-      extra: {},
+      extra,
       source: { filePath: result.filePath, line, format: result.format, raw },
       ratingMode: "legacy-2021",
-      needsReview: false,
+      completed: false,
+      platinum: false,
+      favorite: false,
+      needsReview: reviewReasons.length > 0,
+      ...(reviewReasons.length ? { reviewReasons } : {}),
     });
   });
 }
@@ -319,13 +383,13 @@ function parseSemicolon(
 
     const name = values[map.name]?.trim() ?? "";
     const dateValue = values[map.date]?.trim() ?? "";
-    if (!name || !dateValue) {
+    if (!name) {
       result.errors.push(
         issue(
           line,
           "error",
-          "missing-required-field",
-          "Falta el nombre o la fecha del juego.",
+          "missing-name",
+          "La fila no tiene nombre de juego.",
           raw,
         ),
       );
@@ -333,22 +397,18 @@ function parseSemicolon(
         line,
         kind: "rejected",
         raw,
-        reason: "Falta nombre o fecha.",
+        reason: "Nombre vacio.",
       });
       return;
     }
 
+    const reviewReasons: ReviewReason[] = [];
     const date = parseDate(dateValue, result.year, line, raw);
     addDateIssue(result, date);
-    if (!date.value) {
-      addPreserved(result, {
-        line,
-        kind: "rejected",
-        raw,
-        reason: "Fecha invalida.",
-      });
-      return;
-    }
+    addReviewIssue(reviewReasons, date);
+
+    const extra: Record<string, string> = {};
+    if (!date.value && dateValue) extra[RAW_DATE_EXTRA_KEY] = dateValue;
 
     let score: number | null = null;
     let rawScore: string | undefined;
@@ -362,28 +422,28 @@ function parseSemicolon(
               line,
               "error",
               "invalid-score",
-              `Puntuacion no valida: "${scoreValue}".`,
+              `Puntuación no válida: "${scoreValue}".`,
               raw,
             ),
           );
-          addPreserved(result, {
-            line,
-            kind: "rejected",
-            raw,
-            reason: "Puntuacion fuera de 0 a 10.",
-          });
-          return;
+          addReviewReason(reviewReasons, "invalid-score");
+          extra[RAW_SCORE_EXTRA_KEY] = scoreValue;
+        } else {
+          score = normalizeScore(parsedScore);
+          rawScore = scoreValue;
         }
-        score = parsedScore;
-        rawScore = scoreValue;
       }
     }
 
-    const extra: Record<string, string> = {};
     const mappedColumns = new Set(
-      [map.name, map.date, map.score, map.recommendation, map.notes].filter(
-        (index): index is number => index !== null,
-      ),
+      [
+        map.name,
+        map.date,
+        map.score,
+        map.recommendation,
+        map.platform,
+        map.notes,
+      ].filter((index): index is number => index !== null),
     );
     result.header.forEach((header, index) => {
       if (!mappedColumns.has(index))
@@ -398,20 +458,22 @@ function parseSemicolon(
         ? ""
         : (values[map.recommendation]?.trim() ?? "");
     let recommendation: string | null = rawRecommendation || null;
-    let needsReview = result.format === "semicolon-mixed";
+    if (result.format === "semicolon-mixed") {
+      addReviewReason(reviewReasons, "mixed-rating-fields");
+    }
     if (rawRecommendation) {
       const canonical = canonicalizeRecommendation(rawRecommendation);
       if (canonical) {
         recommendation = canonical;
         extra[RAW_RECOMMENDATION_EXTRA_KEY] = rawRecommendation;
       } else {
-        needsReview = true;
+        addReviewReason(reviewReasons, "unknown-recommendation");
         result.warnings.push(
           issue(
             line,
             "warning",
             "unknown-recommendation",
-            `Recomendacion no reconocida, conservada sin corregir: "${rawRecommendation}".`,
+            `Recomendación no reconocida, conservada sin corregir: "${rawRecommendation}".`,
             raw,
           ),
         );
@@ -419,6 +481,31 @@ function parseSemicolon(
       }
     }
     if (rawScore) extra[RAW_SCORE_EXTRA_KEY] = rawScore;
+
+    const rawPlatform =
+      map.platform === null ? "" : (values[map.platform]?.trim() ?? "");
+    let platform: Platform | null = null;
+    if (rawPlatform) {
+      const canonical = canonicalizePlatform(rawPlatform);
+      if (canonical) {
+        platform = canonical;
+        if (canonical !== rawPlatform) {
+          preserveRawExtra(extra, RAW_PLATFORM_EXTRA_KEY, rawPlatform);
+        }
+      } else {
+        addReviewReason(reviewReasons, "unknown-platform");
+        preserveRawExtra(extra, RAW_PLATFORM_EXTRA_KEY, rawPlatform);
+        result.warnings.push(
+          issue(
+            line,
+            "warning",
+            "unknown-platform",
+            `Plataforma no reconocida, conservada sin corregir: "${rawPlatform}".`,
+            raw,
+          ),
+        );
+      }
+    }
 
     const ratingMode =
       result.format === "semicolon-mixed"
@@ -436,14 +523,14 @@ function parseSemicolon(
           }
         : undefined;
     if (ratingConflict) {
-      needsReview = true;
+      addReviewReason(reviewReasons, "mixed-rating-fields");
       extra[RATING_CONFLICT_EXTRA_KEY] = "score-and-recommendation";
       result.warnings.push(
         issue(
           line,
           "warning",
           "mixed-rating-fields",
-          "La fila contiene puntuacion y recomendacion; ambas se conservan para revision.",
+          "La fila contiene puntuación y recomendación; ambas se conservan para revisión.",
           raw,
         ),
       );
@@ -452,14 +539,20 @@ function parseSemicolon(
     result.rows.push({
       name,
       year: result.year,
-      date: date.value,
+      date: date.value ?? "",
       score,
       recommendation,
+      platform,
+      cover: null,
       notes: map.notes === null ? "" : (values[map.notes]?.trim() ?? ""),
       extra,
       source: { filePath: result.filePath, line, format: result.format, raw },
       ratingMode,
-      needsReview,
+      completed: false,
+      platinum: false,
+      favorite: false,
+      needsReview: reviewReasons.length > 0,
+      ...(reviewReasons.length ? { reviewReasons } : {}),
       ...(ratingConflict ? { ratingConflict } : {}),
     });
   });
@@ -468,7 +561,9 @@ function parseSemicolon(
 function inferYearFromContent(result: ImportResult): void {
   if (result.year !== null || result.rows.length === 0) return;
   const contentYears = new Set(
-    result.rows.map((row) => Number(row.date.slice(0, 4))),
+    result.rows
+      .map((row) => Number(row.date.slice(0, 4)))
+      .filter((year) => Number.isInteger(year) && year > 0),
   );
   if (contentYears.size === 1) {
     result.year = [...contentYears][0];
@@ -477,12 +572,18 @@ function inferYearFromContent(result: ImportResult): void {
       row.year = result.year;
     });
   } else {
+    result.rows.forEach((row) => {
+      row.needsReview = true;
+      const reviewReasons = row.reviewReasons ? [...row.reviewReasons] : [];
+      addReviewReason(reviewReasons, "ambiguous-year");
+      row.reviewReasons = reviewReasons;
+    });
     result.warnings.push(
       issue(
         0,
         "warning",
         "ambiguous-year",
-        "No se puede asociar un unico anio al contenido del fichero.",
+      "No se puede asociar un único año al contenido del fichero.",
       ),
     );
   }

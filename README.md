@@ -72,16 +72,31 @@ La importacion no modifica el fichero seleccionado. Antes de confirmar muestra:
 - posibles duplicados.
 
 La exportacion esta disponible desde el boton `Export`. El usuario elige entre
-los tres formatos historicos. Las puntuaciones se convierten a rangos de
-recomendacion y las recomendaciones a sus puntos medios numericos, siempre con
-avisos. Un registro sin valoracion usa `5` o `Recomendado`; el formato legacy
-omite los campos de rating porque no los admite.
+los tres formatos historicos y, si activa la columna de plataforma en ajustes,
+un cuarto formato de recomendacion con la columna `Plataforma`. Las
+puntuaciones se convierten a rangos de recomendacion y las recomendaciones a
+sus puntos medios numericos, siempre con avisos. Un registro sin valoracion usa
+`5` o `Recomendado`; el formato legacy omite los campos de rating porque no los
+admite.
 
 Formatos reconocidos actualmente:
 
 - Historico 2021 con `///` y fecha `DD/MM/YYYY`.
 - Tablas separadas por `;` con puntuacion de 0 a 10, usadas por 2022-2024.
 - Tablas separadas por `;` con recomendacion, usadas por 2025-2026.
+- Tablas de recomendacion con una columna opcional `Plataforma`.
+
+La plataforma se puede seleccionar entre `Nintendo Switch`, `Play Station`,
+`PC - Steam`, `PC - Emulated` y `Xbox`. Los valores desconocidos se conservan
+para revision y no se corrigen silenciosamente.
+
+Al anadir o editar un juego, la aplicacion busca candidatas en HowLongToBeat
+solo cuando se pulsa `Buscar portada`. Si se configura una API key gratuita de
+TheGamesDB en Ajustes, se usa primero ese catalogo multiplataforma y HLTB queda
+como fallback. La portada solo se guarda despues de que el usuario elige una
+candidata; tambien se puede seleccionar un archivo local.
+Las copias elegidas se guardan en el cache interno y se muestran como
+miniaturas ampliables en la biblioteca.
 
 Los casos representativos de prueba estan en `test/fixtures/`. La logica
 vive en `src/domain/importer.ts` y no depende de Electron ni de React.
@@ -100,9 +115,15 @@ La interfaz no accede directamente al sistema de ficheros. El renderer solo
 recibe las funciones necesarias a traves de `contextBridge` e IPC.
 
 La persistencia interna inicial es `library.v1.json` en la carpeta de datos de
-usuario de Electron. Conserva juegos, auditorias de importacion y filas
-preservadas. Es una primera version estable y reemplazable por SQLite sin
-cambiar el contrato del parser.
+usuario de Electron, actualmente con schema 5. Conserva juegos, plataformas,
+portadas, estados Neo, auditorias de importacion y filas preservadas. Es una
+primera version estable y reemplazable por SQLite sin cambiar el contrato del
+parser.
+
+El modo de tabla `Neo` importa `Hoja 1` de los libros XLSX y admite CSV. El año
+se lee por fila desde `Fecha`; los rellenos de `Juego` y `Completado` conservan
+favorito y platinado. La exportacion XLSX mantiene esos colores y la CSV usa
+columnas explicitas para que los estados no se pierdan.
 
 En Windows la ruta actual es:
 
